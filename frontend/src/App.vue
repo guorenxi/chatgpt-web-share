@@ -1,7 +1,7 @@
 <template>
-  <n-config-provider :theme="theme">
+  <n-config-provider :locale="locale" :theme="theme">
     <n-global-style />
-    <div class="w-full box-border min-h-screen flex flex-col">
+    <div class="w-full box-border flex flex-col">
       <n-layout>
         <PageHeader v-if="userStore.user" />
         <div style="height: calc(100vh - var(--header-height)); height: calc(100dvh - var(--header-height))">
@@ -13,8 +13,8 @@
 </template>
 
 <script setup lang="ts">
-import { useEventListener, useScreenSafeArea } from '@vueuse/core';
-import { darkTheme } from 'naive-ui';
+import { useEventListener } from '@vueuse/core';
+import { darkTheme, enUS, zhCN } from 'naive-ui';
 import { computed } from 'vue';
 
 import PageHeader from './components/PageHeader.vue';
@@ -22,8 +22,6 @@ import { useAppStore, useUserStore } from './store';
 
 const appStore = useAppStore();
 const userStore = useUserStore();
-
-const { bottom } = useScreenSafeArea();
 
 const setFullHeight = () => {
   const headerHeight = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--header-height'), 10);
@@ -40,5 +38,10 @@ const theme = computed(() => {
   } else {
     return {};
   }
+});
+
+const locale = computed(() => {
+  if (appStore.language == 'zh-CN') return zhCN;
+  else return enUS;
 });
 </script>

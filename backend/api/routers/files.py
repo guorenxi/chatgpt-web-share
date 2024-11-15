@@ -27,11 +27,12 @@ openai_web_manager = OpenaiWebChatManager()
 
 @router.get("/files/{file_id}/download-url", tags=["conversation"], response_model=str)
 @cache(expire=10 * 60)
-async def get_file_download_url(file_id: str):
+async def get_file_download_url(file_id: str, user: User = Depends(current_active_user)):
     """
     file_id: OpenAI 分配的 id，以 file- 开头
     """
-    url = await openai_web_manager.get_file_download_url(file_id)
+    # TODO: 应当根据对话的 source_id 作为 ChatGPT Account ID
+    url = await openai_web_manager.get_file_download_url(file_id, user.setting.openai_web.use_team)
     return url
 
 
@@ -49,7 +50,7 @@ async def upload_file_to_local(file: UploadFile = File(...), user: User = Depend
     async with get_async_session_context() as session:
         file_info = await file_provider.save_file(file, user.id, session)
 
-    return UploadedFileInfoSchema.from_orm(file_info)
+    return UploadedFileInfoSchema.model_validate(file_info)
 
 
 @router.get("/files/local/download/{file_id}", tags=["files"])
@@ -81,7 +82,7 @@ async def start_upload_to_openai(upload_request: StartUploadRequestSchema, user:
     file_size_exceed = upload_request.file_size > config.data.max_file_upload_size
     if config.openai_web.file_upload_strategy == OpenaiWebFileUploadStrategyOption.server_upload_only and file_size_exceed:
         raise InvalidRequestException(f"File is too large! Max size: {config.data.max_file_upload_size}")
-    user_info = UserRead.from_orm(user)
+    user_info = UserRead.model_validate(user)
     if user_info.setting.openai_web.disable_uploading or config.openai_web.disable_uploading:
         raise InvalidRequestException(f"Uploading disabled")
 
@@ -97,7 +98,7 @@ async def start_upload_to_openai(upload_request: StartUploadRequestSchema, user:
             file_size=upload_request.file_size,
             use_case=upload_request.use_case
         )
-        response = await openai_web_manager.get_file_upload_url(upload_info)
+        response = await openai_web_manager.get_file_upload_url(upload_info, user.setting.openai_web.use_team)
         file_info = UploadedFileInfoSchema(
             id=uuid.uuid4(),
             original_filename=upload_request.file_name,
@@ -117,7 +118,7 @@ async def start_upload_to_openai(upload_request: StartUploadRequestSchema, user:
             )
         )
         async with get_async_session_context() as session:
-            session.add(UploadedFileInfo(**file_info.dict()))
+            session.add(UploadedFileInfo(**file_info.model_dump()))
             await session.commit()
 
     return StartUploadResponseSchema(
@@ -148,9 +149,10 @@ async def complete_upload_to_openai(file_id: uuid.UUID, user: User = Depends(cur
         if file_info.storage_path is not None:
             raise InvalidRequestException(f"File {file_id} already uploaded to server")
 
-        file_info_schema = UploadedFileInfoSchema.from_orm(file_info)
+        file_info_schema = UploadedFileInfoSchema.model_validate(file_info)
         openai_web_info = file_info_schema.openai_web_info
-        download_url = await openai_web_manager.check_file_uploaded(file_info.openai_web_info.file_id)
+        download_url = await openai_web_manager.check_file_uploaded(file_info.openai_web_info.file_id,
+                                                                    user.setting.openai_web.use_team)
         openai_web_info.download_url = download_url
         openai_web_info.upload_url = None
         file_info.openai_web_info = openai_web_info
@@ -158,7 +160,7 @@ async def complete_upload_to_openai(file_id: uuid.UUID, user: User = Depends(cur
         session.add(file_info)
         await session.commit()
 
-        return UploadedFileInfoSchema.from_orm(file_info)
+        return UploadedFileInfoSchema.model_validate(file_info)
 
 
 @router.post("/files/local/upload-to-openai-web/{file_id}", tags=["files"], response_model=UploadedFileInfoSchema)
@@ -175,8 +177,8 @@ async def upload_local_file_to_openai_web(file_id: uuid.UUID, user: User = Depen
         if not user.is_superuser and file_info.uploader_id != user.id:
             raise AuthorityDenyException(f"File {file_id} not uploaded by you")
 
-        openai_web_file_info = await openai_web_manager.upload_file_in_server(file_info)
+        openai_web_file_info = await openai_web_manager.upload_file_in_server(file_info, user.setting.openai_web.use_team)
         file_info.openai_web_info = openai_web_file_info
         await session.commit()
 
-        return UploadedFileInfoSchema.from_orm(file_info)
+        return UploadedFileInfoSchema.model_validate(file_info)

@@ -42,22 +42,24 @@ async def login(
     #         detail=ErrorCode.LOGIN_USER_NOT_VERIFIED,
     #     )
     resp = await auth_backend.login(strategy, user)
-    return response(200, headers=resp.headers)
+    return response(200, headers=dict(resp.headers))
 
 
 get_current_user_token = fastapi_users.authenticator.current_user_token(
-    active=True, verified=False
+    optional=False,
+    active=True,
+    verified=False,
 )
 
 
 @router.post("/auth/logout", name=f"auth:{auth_backend.name}.logout")
 async def logout(
-        user_token: Tuple[User, str] = Depends(get_current_user_token),
+        user_token=Depends(get_current_user_token),
         strategy: Strategy[User, int] = Depends(auth_backend.get_strategy),
 ):
     user, token = user_token
     resp = await auth_backend.logout(strategy, user, token)
-    return response(200, headers=resp.headers)
+    return response(200, headers=dict(resp.headers))
 
 
 @router.post("/auth/register", response_model=UserReadAdmin, tags=["auth"])
@@ -71,7 +73,7 @@ async def register(
         async with get_user_db_context(session) as user_db:
             async with get_user_manager_context(user_db) as user_manager:
                 user = await user_manager.create(user_create, safe=False, request=request)
-                return UserReadAdmin.from_orm(user)
+                return UserReadAdmin.model_validate(user)
 
 
 @router.get("/user", tags=["user"])
@@ -91,7 +93,7 @@ async def get_all_users(_user: User = Depends(current_super_user)):
 
 @router.get("/user/me", response_model=UserRead, tags=["user"])
 async def get_me(user: User = Depends(current_active_user)):
-    user_read = UserRead.from_orm(user)
+    user_read = UserRead.model_validate(user)
     for source in ["openai_api", "openai_web"]:
         source_setting = getattr(user_read.setting, source)
         global_enabled_models = getattr(config, source).enabled_models
@@ -123,7 +125,7 @@ async def update_me(
                 user = await user_manager.update(
                     user_update, user, safe=True, request=request
                 )
-                return UserRead.from_orm(user)
+                return UserRead.model_validate(user)
 
 
 @router.get("/user/{user_id}", response_model=UserReadAdmin, tags=["user"])
@@ -132,7 +134,7 @@ async def admin_get_user(user_id: int, _user: User = Depends(current_super_user)
         user = await session.get(User, user_id)
         if user is None:
             raise UserNotExistException()
-        result = UserRead.from_orm(user)
+        result = UserRead.model_validate(user)
         return result
 
 
@@ -146,7 +148,7 @@ async def admin_update_user(user_update_admin: UserUpdateAdmin, request: Request
                 user = await user_manager.update(
                     user_update_admin, user, safe=False, request=request
                 )
-                return UserReadAdmin.from_orm(user)
+                return UserReadAdmin.model_validate(user)
 
 
 @router.delete("/user/{user_id}", tags=["user"])
@@ -169,4 +171,4 @@ async def admin_update_user_setting(user_id: int, user_setting: UserSettingSchem
             setattr(user.setting, key, value)
         await session.commit()
         await session.refresh(user)
-        return UserReadAdmin.from_orm(user)
+        return UserReadAdmin.model_validate(user)

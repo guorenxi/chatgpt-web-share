@@ -40,7 +40,8 @@ class User(Base):
     setting: Mapped["UserSetting"] = relationship("UserSetting", back_populates="user", lazy="joined",
                                                   cascade="save-update, merge, delete, delete-orphan")
     conversations: Mapped[List["BaseConversation"]] = relationship("BaseConversation", back_populates="user")
-    uploaded_files: Mapped[List["UploadedFileInfo"]] = relationship("UploadedFileInfo", back_populates="uploader")
+    uploaded_files: Mapped[List["UploadedFileInfo"]] = relationship("UploadedFileInfo", back_populates="uploader",
+                                                                    cascade="delete")  # TODO: 删除用户时，删除用户上传的文件
 
 
 class UserSetting(Base):
@@ -71,6 +72,7 @@ class BaseConversation(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     source: Mapped[ChatSourceTypes] = mapped_column(Enum(ChatSourceTypes), comment="对话类型")
+    source_id: Mapped[Optional[str]] = mapped_column(String(256), comment="对话来源id")
     conversation_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True, unique=True, comment="uuid")
     current_model: Mapped[Optional[str]] = mapped_column(default=None, use_existing_column=True)
     title: Mapped[Optional[str]] = mapped_column(comment="对话标题")

@@ -24,6 +24,7 @@ export const chatModelColorMap: Record<string, string> = {
   gpt_3_5: 'green',
   gpt_3_5_mobile: 'darkgreen',
   gpt_4: 'purple',
+  gpt_4o: 'purple',
   gpt_4_mobile: 'darkpurple',
   gpt_4_browsing: 'purple',
   gpt_4_plugins: 'purple',
@@ -113,7 +114,7 @@ export function getMessageListFromHistory(
 ): BaseChatMessage[] {
   const result: BaseChatMessage[] = [];
   if (!convHistory) return result;
-  let x = lastNode || convHistory.current_node || undefined;
+  let x = lastNode || convHistory.current_node || undefined as any;
   while (x != undefined) {
     const message = convHistory.mapping[x];
     if (message && message.content != undefined) {
@@ -278,9 +279,9 @@ export function replaceMathDelimiters(input: string) {
         const endMarker = isInline ? '\\)' : '\\]';
         const endPos = input.indexOf(endMarker, pos + 2);
         if (endPos >= 0) {
-          output += isInline ? '$' : '$$';
+          output += isInline ? '$' : '\n$$\n';
           output += input.substring(pos + 2, endPos).trim();
-          output += isInline ? '$' : '$$';
+          output += isInline ? '$' : '\n$$\n';
           pos = endPos + endMarker.length;
           continue;
         }
@@ -311,7 +312,7 @@ export function replaceMathDelimiters(input: string) {
     pos++;
   }
   // return output;
-  return output;
+  return output.replace(/\n\n\n+/g, '\n\n');
 }
 
 export function dompurifyRenderedHtml(html: string) {

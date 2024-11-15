@@ -9,7 +9,7 @@ enum ApiUrl {
   UserList = '/user',
 
   ChatPlugin = '/chat/openai-plugin',
-  AllChatPlugins = '/chat/openai-plugins/all',
+  ChatPlugins = '/chat/openai-plugins',
   InstalledChatPlugins = '/chat/openai-plugins/installed',
 
   ServerStatus = '/status/common',
@@ -17,17 +17,23 @@ enum ApiUrl {
   SystemInfo = '/system/info',
   SystemRequestStatistics = '/system/stats/request',
   SystemAskStatistics = '/system/stats/ask',
-  ServerLogs = '/system/logs/server',
   SystemActionSyncOpenaiWebConversations = '/system/action/sync-openai-web-conv',
+  SystemCheckOpenaiWebAccount = '/system/check-openai-web-account',
+
+  ServerLogs = '/logs/server',
+  CompletionLogs = '/logs/completions',
 
   SystemConfig = '/system/config',
   SystemCredentials = '/system/credentials',
+
 
   FilesLocalUpload = '/files/local/upload',
   FilesLocalDownload = '/files/local/download',
   FilesOpenaiWebUploadStart = '/files/openai-web/upload-start',
   FilesOpenaiWebUploadComplete = '/files/openai-web/upload-complete',
   FilesLocalUploadToOpenaiWeb = '/files/local/upload-to-openai-web',
+
+  ArkoseInfo = '/arkose/info',
 }
 
 export default ApiUrl;

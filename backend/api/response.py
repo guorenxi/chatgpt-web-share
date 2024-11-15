@@ -7,17 +7,17 @@ from fastapi import Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi_users.router import ErrorCode
-from pydantic import ValidationError
-from pydantic.generics import GenericModel
+from pydantic import BaseModel, ValidationError
 from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from api.exceptions import SelfDefinedException
+from api.exceptions import SelfDefinedException, ArkoseForwardException
+from utils.common import desensitize
 
 T = TypeVar('T')
 
 
-class ResponseWrapper(GenericModel, Generic[T]):
+class ResponseWrapper(BaseModel, Generic[T]):
     """
     使用自定义的返回格式：
     - 统一状态码为 200
@@ -31,12 +31,6 @@ class ResponseWrapper(GenericModel, Generic[T]):
     code: int = 0
     message: str = ""
     result: Optional[T | Any] = None
-
-    def to_dict(self):
-        return jsonable_encoder(self)
-
-    def to_json(self):
-        return json.dumps(self.to_dict(), ensure_ascii=False)
 
 
 class CustomJSONResponse(Response):
@@ -55,7 +49,8 @@ class CustomJSONResponse(Response):
     def render(self, content: typing.Any) -> bytes:
         if not isinstance(content, ResponseWrapper):
             content = ResponseWrapper(code=self.status_code, message=get_http_message(self.status_code), result=content)
-        return content.to_json().encode("utf-8")
+        result = json.dumps(jsonable_encoder(content), ensure_ascii=False)
+        return result.encode("utf-8")
 
 
 class PrettyJSONResponse(Response):
@@ -97,13 +92,17 @@ def handle_exception_response(e: Exception) -> CustomJSONResponse:
     if isinstance(e, ValidationError):
         return response(-1, f"errors.validationError", e.errors())
     elif isinstance(e, SelfDefinedException):
-        return response(e.code, e.reason, e.message)
+        return response(e.code, e.reason, desensitize(e.message))
     elif isinstance(e, StarletteHTTPException):
         if e.detail == ErrorCode.REGISTER_USER_ALREADY_EXISTS:
-            message = "errors.userAlreadyExists"
+            tip = "errors.userAlreadyExists"
         elif e.detail == ErrorCode.LOGIN_BAD_CREDENTIALS:
-            message = "errors.badCredentials"
+            tip = "errors.badCredentials"
         else:
-            message = get_http_message(e.status_code)
-        return response(e.status_code or -1, message or f"{e.status_code} {e.detail}")
-    return response(-1, str(e))
+            tip = get_http_message(e.status_code)
+        return response(e.status_code or -1, tip, desensitize(f"{e.status_code} {e.detail}"))
+    return response(-1, desensitize(f"{e.__class__.__name__}: {desensitize(str(e))}"))
+
+
+def handle_arkose_forward_exception(e: ArkoseForwardException):
+    return Response(content=e.message, status_code=e.code, media_type="application/plain")

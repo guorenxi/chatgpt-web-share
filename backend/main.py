@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+from contextlib import asynccontextmanager
 
 import aiocron
 import uvicorn
@@ -18,11 +19,11 @@ import api.globals as g
 from api.database.sqlalchemy import initialize_db, get_async_session_context, get_user_db_context
 from api.database.mongodb import init_mongodb
 from api.enums import OpenaiWebChatStatus
-from api.exceptions import SelfDefinedException, UserAlreadyExists
+from api.exceptions import SelfDefinedException, UserAlreadyExists, ArkoseForwardException
 from api.middlewares import AccessLoggerMiddleware, StatisticsMiddleware
 from api.models.db import User
-from api.response import CustomJSONResponse, handle_exception_response
-from api.routers import users, conv, chat, system, status, files
+from api.response import CustomJSONResponse, handle_exception_response, handle_arkose_forward_exception
+from api.routers import users, conv, chat, system, status, files, logs, arkose
 from api.schemas import UserCreate, UserSettingSchema
 from api.sources import OpenaiWebChatManager
 from api.users import get_user_manager_context
@@ -36,48 +37,13 @@ setup_logger()
 
 logger = get_logger(__name__)
 
-app = FastAPI(
-    default_response_class=CustomJSONResponse,
-    middleware=[
-        Middleware(AccessLoggerMiddleware, format='%(client_addr)s | %(request_line)s | %(status_code)s | %(M)s ms',
-                   logger=get_logger("access")),
-        Middleware(StatisticsMiddleware, filter_keywords=config.stats.request_stats_filter_keywords)]
-)
+if config.log.console_log_level != "DEBUG":
+    import warnings
 
-app.include_router(users.router)
-app.include_router(conv.router)
-app.include_router(chat.router)
-app.include_router(system.router)
-app.include_router(status.router)
-app.include_router(files.router)
-
-# 解决跨站问题
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=config.http.cors_allow_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    warnings.filterwarnings("ignore")
 
 
-@app.exception_handler(StarletteHTTPException)
-async def http_exception_handler(request, exc):
-    return handle_exception_response(exc)
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request, exc):
-    return handle_exception_response(exc)
-
-
-@app.exception_handler(SelfDefinedException)
-async def validation_exception_handler(request, exc):
-    return handle_exception_response(exc)
-
-
-@app.on_event("startup")
-async def on_startup():
+async def startup():
     await initialize_db()
     await init_mongodb()
 
@@ -96,7 +62,7 @@ async def on_startup():
                         user = await user_manager.create(UserCreate(
                             username=config.common.initial_admin_user_username,
                             nickname="admin",
-                            email=EmailStr("admin@admin.com"),
+                            email="admin@admin.com",
                             password=config.common.initial_admin_user_password,
                             is_active=True,
                             is_verified=True,
@@ -141,17 +107,57 @@ async def on_startup():
             await sync_conversations()
 
 
-# 关闭时
-@app.on_event("shutdown")
-async def on_shutdown():
-    logger.info("On shutdown...")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await startup()
+    yield
 
 
-# @api.get("/routes")
-# async def root():
-#     url_list = [{"name": route.name, "path": route.path, "path_regex": str(route.path_regex)}
-#                 for route in api.routes]
-#     return PrettyJSONResponse(url_list)
+app = FastAPI(
+    lifespan=lifespan,
+    default_response_class=CustomJSONResponse,
+    middleware=[
+        Middleware(AccessLoggerMiddleware, format='%(client_addr)s | %(request_line)s | %(status_code)s | %(M)s ms',
+                   logger=get_logger("access")),
+        Middleware(StatisticsMiddleware, filter_keywords=config.stats.request_stats_filter_keywords)]
+)
+
+app.include_router(users.router)
+app.include_router(conv.router)
+app.include_router(chat.router)
+app.include_router(system.router)
+app.include_router(logs.router)
+app.include_router(status.router)
+app.include_router(files.router)
+app.include_router(arkose.router)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=config.http.cors_allow_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request, exc):
+    return handle_exception_response(exc)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    return handle_exception_response(exc)
+
+
+@app.exception_handler(SelfDefinedException)
+async def self_defined_exception_handler(request, exc):
+    return handle_exception_response(exc)
+
+
+@app.exception_handler(ArkoseForwardException)
+async def arkose_forward_exception_handler(request, exc):
+    return handle_arkose_forward_exception(exc)
 
 
 if __name__ == "__main__":

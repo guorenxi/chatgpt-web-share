@@ -8,8 +8,9 @@ from typing import Optional, Any
 import httpx
 from fastapi import APIRouter, Depends
 from fastapi.encoders import jsonable_encoder
+from fastapi_cache.decorator import cache
 from httpx import HTTPError
-from pydantic import ValidationError
+from pydantic import ValidationError, BaseModel
 from sqlalchemy import select, func, and_
 from starlette.websockets import WebSocket, WebSocketState
 from websockets.exceptions import ConnectionClosed
@@ -17,19 +18,19 @@ from websockets.exceptions import ConnectionClosed
 from api.conf import Config
 from api.database.sqlalchemy import get_async_session_context
 from api.enums import OpenaiWebChatStatus, ChatSourceTypes, OpenaiWebChatModels, OpenaiApiChatModels
-from api.enums.options import OpenaiWebFileUploadStrategyOption
 from api.exceptions import InternalException, InvalidParamsException, OpenaiException
-from api.models.db import OpenaiWebConversation, User, BaseConversation
-from api.models.doc import OpenaiWebChatMessage, OpenaiApiChatMessage, OpenaiWebConversationHistoryDocument, \
-    OpenaiApiConversationHistoryDocument, OpenaiApiChatMessageTextContent, AskLogDocument, OpenaiWebAskLogMeta, \
+from api.models.db import User, BaseConversation
+from api.models.doc import OpenaiApiChatMessage, OpenaiApiConversationHistoryDocument, OpenaiApiChatMessageTextContent, \
+    AskLogDocument, OpenaiWebAskLogMeta, \
     OpenaiApiAskLogMeta
 from api.routers.conv import _get_conversation_by_id
-from api.schemas import OpenaiWebConversationSchema, AskRequest, AskResponse, AskResponseType, UserReadAdmin, \
+from api.schemas import AskRequest, AskResponse, AskResponseType, UserReadAdmin, \
     BaseConversationSchema
-from api.schemas.openai_schemas import OpenaiChatPlugin, OpenaiChatPluginUserSettings
-from api.sources import OpenaiWebChatManager, convert_revchatgpt_message, OpenaiApiChatManager, OpenaiApiException
+from api.schemas.openai_schemas import OpenaiChatPlugin, OpenaiChatPluginUserSettings, OpenaiChatPluginListResponse
+from api.sources import OpenaiWebChatManager, convert_openai_web_message, OpenaiApiChatManager
 from api.users import websocket_auth, current_active_user, current_super_user
-from utils.logger import get_logger
+from utils.common import desensitize
+from utils.logger import get_logger, with_traceback
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -37,82 +38,99 @@ openai_web_manager = OpenaiWebChatManager()
 openai_api_manager = OpenaiApiChatManager()
 config = Config()
 
-PLUGINS_CACHE_FILE_PATH = os.path.join(config.data.data_dir, "plugin_manifests.json")
-
-_plugins_manifests: list[OpenaiChatPlugin] | None = None
-_plugins_manifests_map: dict[str, OpenaiChatPlugin] | None = None
-_plugins_manifests_last_update_time = None
+INSTALLED_PLUGINS_CACHE_FILE_PATH = os.path.join(config.data.data_dir, "installed_plugin_manifests.json")
+INSTALLED_PLUGINS_TEAM_CACHE_FILE_PATH = os.path.join(config.data.data_dir, "installed_plugin_manifests_team.json")
+CACHE_EXPIRE_DURATION = 3600 * 24
 
 
-def load_plugins_from_cache():
-    global _plugins_manifests, _plugins_manifests_map, _plugins_manifests_last_update_time
-    if os.path.exists(PLUGINS_CACHE_FILE_PATH):
-        with open(PLUGINS_CACHE_FILE_PATH, "r") as f:
-            data = json.load(f)
-            _plugins_manifests = [OpenaiChatPlugin(**plugin) for plugin in data["plugins_manifests"]]
-            _plugins_manifests_map = {plugin.id: plugin for plugin in _plugins_manifests}
-            _plugins_manifests_last_update_time = data["plugins_manifests_last_update_time"]
+# TODO: 优化插件缓存处理，隔离不同来源的插件
+
+class PluginsCache(BaseModel):
+    response: Optional[OpenaiChatPluginListResponse] = None
+    map: Optional[dict[str, OpenaiChatPlugin]] = None
+    last_update_time: Optional[float] = None
 
 
-def save_plugins_to_cache(plugins_manifests, plugins_manifests_last_update_time):
-    with open(PLUGINS_CACHE_FILE_PATH, "w") as f:
+_cache_by_use_team = {
+    False: PluginsCache(),
+    True: PluginsCache()
+}
+
+
+def _load_installed_plugins_from_cache():
+    global _cache_by_use_team
+    for use_team in [False, True]:
+        _cache = _cache_by_use_team[use_team]
+        path = INSTALLED_PLUGINS_CACHE_FILE_PATH if not use_team else INSTALLED_PLUGINS_TEAM_CACHE_FILE_PATH
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                data = json.load(f)
+                _cache.response = OpenaiChatPluginListResponse.model_validate(data["installed_plugins"])
+                _cache.map = {plugin.id: plugin for plugin in _cache.response.items}
+                _cache.last_update_time = data["installed_plugins_last_update_time"]
+
+
+def _save_installed_plugins_to_cache(installed_plugins, installed_plugins_last_update_time, dest_path: str):
+    with open(dest_path, "w") as f:
         json.dump(jsonable_encoder({
-            "plugins_manifests": plugins_manifests,
-            "plugins_manifests_last_update_time": plugins_manifests_last_update_time
+            "installed_plugins": installed_plugins,
+            "installed_plugins_last_update_time": installed_plugins_last_update_time
         }), f)
 
 
-load_plugins_from_cache()
+_load_installed_plugins_from_cache()
 
 
-async def _refresh_plugins():
-    # TODO refresh plugins on schedule
-    global _plugins_manifests, _plugins_manifests_map, _plugins_manifests_last_update_time
-    if _plugins_manifests is None or time.time() - _plugins_manifests_last_update_time > 3600 * 24:
-        _plugins_manifests = await openai_web_manager.get_plugin_manifests()
-        _plugins_manifests_map = {plugin.id: plugin for plugin in _plugins_manifests}
-        _plugins_manifests_last_update_time = time.time()
-        save_plugins_to_cache(_plugins_manifests, _plugins_manifests_last_update_time)
-    return _plugins_manifests
+async def _refresh_installed_plugins(use_team: bool = False):
+    global _cache_by_use_team
+
+    _cache = _cache_by_use_team[use_team]
+    if _cache.response is None or time.time() - _cache.last_update_time > CACHE_EXPIRE_DURATION:
+        _cache.response = await openai_web_manager.get_installed_plugin_manifests(use_team=use_team)
+        _cache.map = {plugin.id: plugin for plugin in _cache.response.items}
+        _cache.last_update_time = time.time()
+        _save_installed_plugins_to_cache(_cache.response, _cache.last_update_time,
+                                         INSTALLED_PLUGINS_TEAM_CACHE_FILE_PATH if use_team else INSTALLED_PLUGINS_CACHE_FILE_PATH)
+
+    return _cache.response
 
 
-@router.get("/chat/openai-plugins/all", tags=["chat"], response_model=list[OpenaiChatPlugin])
-async def get_all_openai_web_chat_plugins(_user: User = Depends(current_active_user)):
-    plugins = await _refresh_plugins()
+@router.get("/chat/openai-plugins", tags=["chat"], response_model=OpenaiChatPluginListResponse)
+@cache(expire=60 * 60 * 24)
+async def get_openai_web_chat_plugins(offset: int = 0, limit: int = 0, category: str = "", search: str = "",
+                                      user: User = Depends(current_active_user)):
+    plugins = await openai_web_manager.get_plugin_manifests(offset, limit, category, search,
+                                                            user.setting.openai_web.use_team)
     return plugins
 
 
-@router.get("/chat/openai-plugins/installed", tags=["chat"], response_model=list[OpenaiChatPlugin])
-async def get_installed_openai_web_chat_plugins(_user: User = Depends(current_active_user)):
-    plugins = await _refresh_plugins()
-    return [plugin for plugin in plugins if plugin.user_settings and plugin.user_settings.is_installed]
+@router.get("/chat/openai-plugins/installed", tags=["chat"], response_model=OpenaiChatPluginListResponse)
+async def get_installed_openai_web_chat_plugins(user: User = Depends(current_active_user)):
+    plugins = await _refresh_installed_plugins()
+    return plugins
 
 
-@router.get("/chat/openai-plugin/{plugin_id}", tags=["chat"], response_model=OpenaiChatPlugin)
-async def get_openai_web_plugin(plugin_id: str, _user: User = Depends(current_active_user)):
-    await _refresh_plugins()
-    global _plugins_manifests_map
-    if plugin_id in _plugins_manifests_map:
-        return _plugins_manifests_map[plugin_id]
+@router.get("/chat/openai-plugins/installed/{plugin_id}", tags=["chat"], response_model=OpenaiChatPlugin)
+async def get_installed_openai_web_plugin(plugin_id: str, user: User = Depends(current_active_user)):
+    use_team = user.setting.openai_web.use_team
+    await _refresh_installed_plugins(use_team)
+    global _cache_by_use_team
+    _installed_plugins_map = _cache_by_use_team[use_team].map
+    if plugin_id in _installed_plugins_map:
+        return _installed_plugins_map[plugin_id]
     else:
         raise InvalidParamsException("errors.pluginNotFound")
 
 
-@router.patch("/chat/openai-plugin/{plugin_id}/user-settings", tags=["chat"], response_model=OpenaiChatPlugin)
+@router.patch("/chat/openai-plugins/{plugin_id}/user-settings", tags=["chat"], response_model=OpenaiChatPlugin)
 async def update_chat_plugin_user_settings(plugin_id: str, settings: OpenaiChatPluginUserSettings,
+                                           use_team: Optional[bool] = config.openai_web.enable_team_subscription,
                                            _user: User = Depends(current_super_user)):
     if settings.is_authenticated is not None:
         raise InvalidParamsException("can not set is_authenticated")
-    result = await openai_web_manager.change_plugin_user_settings(plugin_id, settings)
+    result = await openai_web_manager.change_plugin_user_settings(plugin_id, settings, use_team)
     assert isinstance(result, OpenaiChatPlugin)
-
-    global _plugins_manifests, _plugins_manifests_last_update_time
-    if _plugins_manifests is not None:
-        for plugin in _plugins_manifests:
-            if plugin.id == plugin_id:
-                plugin.user_settings = result.user_settings
-                break
-        _plugins_manifests_last_update_time = time.time()
+    await _refresh_installed_plugins(use_team)
     return result
 
 
@@ -184,7 +202,7 @@ async def check_limits(user: UserReadAdmin, ask_request: AskRequest):
         raise WebsocketInvalidAskException("errors.modelNotEnabled")
 
     # 对话次数判断
-    model_ask_count = source_setting.per_model_ask_count.__root__.get(ask_request.model, 0)
+    model_ask_count = source_setting.per_model_ask_count.root.get(ask_request.model, 0)
     total_ask_count = source_setting.total_ask_count
     if total_ask_count != -1 and total_ask_count <= 0:
         # await websocket.close(1008, "errors.noAvailableTotalAskCount")
@@ -208,24 +226,18 @@ async def check_limits(user: UserReadAdmin, ask_request: AskRequest):
 
     # 判断是否允许上传文件
     if ask_request.openai_web_attachments and len(ask_request.openai_web_attachments) > 0:
-        if ask_request.model != OpenaiWebChatModels.gpt_4_code_interpreter and \
+        if ask_request.model != OpenaiWebChatModels.gpt_4o and \
                 ask_request.model != OpenaiWebChatModels.gpt_4:
             raise WebsocketInvalidAskException("errors.uploadingNotAllowed",
-                                               "only gpt-4 and gpt-4-code-interpreter models support uploading")
+                                               "only gpt-4 and gpt-4o models support uploading")
         if user.setting.openai_web.disable_uploading or config.openai_web.disable_uploading:
             raise WebsocketInvalidAskException("errors.uploadingNotAllowed", "uploading disabled")
     if ask_request.openai_web_multimodal_image_parts and len(ask_request.openai_web_multimodal_image_parts) > 0:
-        if ask_request.model != OpenaiWebChatModels.gpt_4:
-            raise WebsocketInvalidAskException("errors.uploadingNotAllowed", "only gpt-4 support uploading images")
+        if ask_request.model != OpenaiWebChatModels.gpt_4o and \
+                ask_request.model != OpenaiWebChatModels.gpt_4:
+            raise WebsocketInvalidAskException("errors.uploadingNotAllowed", "only gpt-4 and gpt-4o models support uploading images")
         if user.setting.openai_web.disable_uploading or config.openai_web.disable_uploading:
             raise WebsocketInvalidAskException("errors.uploadingNotAllowed", "uploading disabled")
-
-
-def check_message(msg: str):
-    # 检查消息中的敏感信息
-    url = Config().openai_web.chatgpt_base_url
-    if url and url in msg:
-        return msg.replace(url, "<chatgpt_base_url>")
 
 
 @router.websocket("/chat")
@@ -235,6 +247,8 @@ async def chat(websocket: WebSocket):
     """
 
     async def reply(response: AskResponse):
+        if response.error_detail:
+            response.error_detail = desensitize(response.error_detail)
         await websocket.send_json(jsonable_encoder(response))
 
     await websocket.accept()
@@ -246,7 +260,7 @@ async def chat(websocket: WebSocket):
     logger.info(f"{user_db.username} connected to websocket")
     websocket.scope["auth_user"] = user_db
 
-    user = UserReadAdmin.from_orm(user_db)
+    user = UserReadAdmin.model_validate(user_db)
 
     if user.setting.openai_web_chat_status != OpenaiWebChatStatus.idling:
         await websocket.close(1008, "errors.cannotConnectMoreThanOneClient")
@@ -254,8 +268,10 @@ async def chat(websocket: WebSocket):
 
     params = await websocket.receive_json()
 
+    use_team = user.setting.openai_web.use_team and config.openai_web.enable_team_subscription
+
     try:
-        ask_request = AskRequest(**params)
+        ask_request = AskRequest.model_validate(params)
     except ValidationError as e:
         logger.warning(f"Invalid ask request: {e}")
         await reply(AskResponse(type=AskResponseType.error, error_detail=str(e)))
@@ -277,6 +293,13 @@ async def chat(websocket: WebSocket):
         assert ask_request.conversation_id is not None
         conversation_id = ask_request.conversation_id
         conversation = await _get_conversation_by_id(ask_request.conversation_id, user_db)
+
+        # 是否可用 team 对话
+        if conversation is not None and conversation.source_id is not None and use_team == False:
+            e = WebsocketException(1008, "errors.teamConversationNotAllowed")
+            await reply(AskResponse(type=AskResponseType.error, tip=e.tip, error_detail=e.error_detail))
+            await websocket.close(e.code, e.tip)
+            return
 
     request_start_time = datetime.now()
 
@@ -312,7 +335,6 @@ async def chat(websocket: WebSocket):
     message = None
 
     try:
-        # rev: 更改状态为 asking
         if ask_request.source == ChatSourceTypes.openai_web:
             await change_user_chat_status(user.id, OpenaiWebChatStatus.asking)
 
@@ -332,19 +354,21 @@ async def chat(websocket: WebSocket):
             model = OpenaiApiChatModels(ask_request.model)
 
         # stream 传输
-        async for data in manager.complete(text_content=ask_request.text_content,
+        async for data in manager.complete(model=model,
+                                           text_content=ask_request.text_content,
+                                           use_team=use_team,
                                            conversation_id=ask_request.conversation_id,
-                                           parent_id=ask_request.parent,
-                                           model=model,
-                                           plugin_ids=ask_request.openai_web_plugin_ids,
+                                           parent_message_id=ask_request.parent,
+                                           plugin_ids=ask_request.openai_web_plugin_ids if ask_request.new_conversation else None,
                                            attachments=ask_request.openai_web_attachments,
                                            multimodal_image_parts=ask_request.openai_web_multimodal_image_parts,
+                                           arkose_token=ask_request.arkose_token,
                                            ):
             has_got_reply = True
 
             try:
                 if ask_request.source == ChatSourceTypes.openai_web:
-                    message = convert_revchatgpt_message(data)
+                    message = convert_openai_web_message(data)
                     if conversation_id is None:
                         conversation_id = data["conversation_id"]
                 else:
@@ -354,7 +378,7 @@ async def chat(websocket: WebSocket):
                         assert ask_request.new_conversation
                         conversation_id = uuid.uuid4()
             except Exception as e:
-                logger.warning(f"convert message error: {e}")
+                logger.warning(f"convert message error: {with_traceback((e))}")
                 continue
 
             await reply(AskResponse(
@@ -377,8 +401,9 @@ async def chat(websocket: WebSocket):
         websocket_code = 1001
         websocket_reason = "errors.timout"
     except OpenaiException as e:
-        logger.error(str(e))
+        logger.error(with_traceback(e))
         error_detail_map = {
+            400: "errors.openai.400",
             401: "errors.openai.401",
             403: "errors.openai.403",
             404: "errors.openai.404",
@@ -393,13 +418,13 @@ async def chat(websocket: WebSocket):
         await reply(AskResponse(
             type=AskResponseType.error,
             tip=tip,
-            error_detail=check_message(str(e))
+            error_detail=str(e)
         ))
         websocket_code = 1001
         websocket_reason = "errors.openaiResponseUnknownError"
     except HTTPError as e:
-        logger.error(str(e))
-        content = check_message(str(e))
+        logger.error(with_traceback(e))
+        content = str(e)
         await reply(AskResponse(
             type=AskResponseType.error,
             tip="errors.httpError",
@@ -408,12 +433,17 @@ async def chat(websocket: WebSocket):
         websocket_code = 1014
         websocket_reason = "errors.httpError"
     except Exception as e:
-        logger.error(str(e))
-        await reply(AskResponse(
-            type=AskResponseType.error,
-            tip="errors.unknownError",
-            error_detail=check_message(str(e))
-        ))
+        logger.error(with_traceback(e))
+        is_canceled = True
+        try:
+            await reply(AskResponse(
+                type=AskResponseType.error,
+                tip="errors.unknownError",
+                error_detail=str(e)
+            ))
+        except Exception as e:
+            # Ignore exception, websocket may be already closed.
+            pass
         websocket_code = 1011
         websocket_reason = "errors.unknownError"
 
@@ -431,7 +461,7 @@ async def chat(websocket: WebSocket):
         ask_time = ask_stop_time - ask_start_time
         ask_time = round(ask_time, 3)
     else:
-        ask_time = None
+        ask_time = 0
     total_time = queueing_time + ask_time
 
     if is_completed:
@@ -485,7 +515,7 @@ async def chat(websocket: WebSocket):
                         str(ask_message.id): ask_message,
                         str(message.id): message
                     },
-                    current_node=str(message.id),
+                    current_node=message.id,
                     current_model=message.model
                 )
 
@@ -522,7 +552,11 @@ async def chat(websocket: WebSocket):
                 if ask_request.source == ChatSourceTypes.openai_web and ask_request.new_title is not None and \
                         ask_request.new_title.strip() != "":
                     try:
-                        await openai_web_manager.set_conversation_title(str(conversation_id), ask_request.new_title)
+                        source_id = None
+                        if use_team:
+                            source_id = config.openai_web.team_account_id
+                        await openai_web_manager.set_conversation_title(str(conversation_id), ask_request.new_title,
+                                                                        source_id=source_id)
                     except Exception as e:
                         logger.warning(f"set_conversation_title error {e.__class__.__name__}: {str(e)}")
 
@@ -537,7 +571,9 @@ async def chat(websocket: WebSocket):
                     create_time=current_time,
                     update_time=current_time
                 )
-                conversation = BaseConversation(**new_conv.dict(exclude_unset=True))
+                if use_team:
+                    new_conv.source_id = config.openai_web.team_account_id
+                conversation = BaseConversation(**new_conv.model_dump(exclude_unset=True))
                 session.add(conversation)
 
             else:
@@ -552,7 +588,7 @@ async def chat(websocket: WebSocket):
             source_setting = user.setting.openai_web if ask_request.source == ChatSourceTypes.openai_web else user.setting.openai_api
 
             total_ask_count = source_setting.total_ask_count
-            model_ask_count = source_setting.per_model_ask_count.__root__.get(ask_request.model, -1)
+            model_ask_count = source_setting.per_model_ask_count.root.get(ask_request.model, -1)
             assert model_ask_count, "model_ask_count is None"
             if total_ask_count != -1 or model_ask_count != -1:
 
@@ -561,7 +597,7 @@ async def chat(websocket: WebSocket):
                     source_setting.total_ask_count -= 1
                 if model_ask_count != -1:
                     assert model_ask_count > 0
-                    source_setting.per_model_ask_count.__root__[ask_request.model] = model_ask_count - 1
+                    source_setting.per_model_ask_count.root[ask_request.model] = model_ask_count - 1
 
                 user_db = await session.get(User, user.id)
                 setattr(user_db.setting, ask_request.source, source_setting)
@@ -581,6 +617,7 @@ async def chat(websocket: WebSocket):
                 user_id=user.id,
                 queueing_time=queueing_time,
                 ask_time=ask_time,
+                conversation_id=conversation_id,
             ).create()
 
     websocket.scope["ask_websocket_close_code"] = websocket_code

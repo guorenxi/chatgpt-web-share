@@ -20,6 +20,7 @@
     "nickname": "Nickname",
     "email": "Email",
     "isSuperuser": "Superuser",
+    "isTeamUser": "Team User",
     "yes": "Yes",
     "no": "No",
     "actions": "Actions",
@@ -73,7 +74,7 @@
     "send": "Send",
     "modelName": "Model Name",
     "gpt4Model": "GPT-4",
-    "unknown": "未知",
+    "unknown": "Unknown",
     "availableAskCountPerModel": "Available Ask Count",
     "canUseGPT4Model": "Allow GPT-4",
     "logViewer": "Log Viewer",
@@ -159,12 +160,12 @@
     "all": "all",
     "disable": "disabled",
     "enable": "enable",
-    "enabled": "activated",
+    "enabled": "Installed",
     "install": "Install",
     "installed": "Installed",
     "most_popular": "most popular",
     "newly_added": "Add",
-    "noPluginsAvailable": "Failed to get the plugin list, please check whether the item \"openai_web.is_plus_account\" is set to true",
+    "noPluginsAvailable": "Failed to get plugin list",
     "pluginSettings": "OpenAI Web Plugin Settings",
     "uninstall": "uninstall",
     "expand": "expand",
@@ -182,7 +183,16 @@
     "myFileBrowser": "My File Browser",
     "content": "Content",
     "readFileResult": "Result",
-    "updateTime": "Update Time"
+    "updateTime": "Update Time",
+    "executeCode": "Execute Code",
+    "siteTitleFull": "ChatGPT Web Share",
+    "completionLogs": "Completion Logs",
+    "time": "Time",
+    "check_chatgpt_accounts": "Check ChatGPT Account Availability",
+    "limit": "limit",
+    "timeRange": "Time Range",
+    "user": "user",
+    "test_arkose": "Test Arkose"
   },
   "errors": {
     "403": "403 error: access denied",
@@ -216,17 +226,20 @@
     "userChatTypeExpired": "The validity period of this conversation type has expired, please contact the administrator to increase the duration",
     "userNotAllowToAskAtThisTime": "Questions are not allowed in the current time period",
     "openai": {
+      "400": "OpenAI request error (400 error), please contact the administrator",
       "401": "OpenAI authorization failed (401 error), please contact the administrator",
       "403": "OpenAI authorization failed (403 error), please contact the administrator",
       "404": "OpenAI reports a 404 error, please contact the administrator",
       "429": "OpenAI reports a 429 error, it may be that the model usage limit has been exceeded, please try again later",
       "500": "OpenAI server error (500 error), it may be that the OpenAI service fails or the model API has changed, please inform the administrator",
-      "unkown": "OpenAI unknown error, please contact the administrator"
+      "unkown": "OpenAI unknown error, please contact the administrator",
+      "unknown": "Unknown OpenAI error"
     },
     "unknown": "unknown error",
     "invalidRequest": "Invalid Request",
     "noAvailableModelAskCount": "The remaining number of available ask count for this model is 0. Please contact the administrator to increase the number of times of use.",
-    "noAvailableTotalAskCount": "The total number of conversations is 0. Please contact the administrator to increase the number of conversations."
+    "noAvailableTotalAskCount": "The total number of conversations is 0. Please contact the administrator to increase the number of conversations.",
+    "teamConversationNotAllowed": "You are currently not allowed to use this conversation, please contact the administrator to activate Team subscription permissions."
   },
   "tips": {
     "loginExpired": "Login expired. Do you want to go to the login page?",
@@ -298,7 +311,9 @@
     "sandboxFileDownloadError": "File download error",
     "sandboxFileNotFound": "File {0} not found, either because the sandbox path is wrong or because the interpreter is expired.",
     "dragFileOrImageHere": "Click or drag any file here to upload",
-    "gpt4UploadingRequirements": "No more than 10 files or images, each file no larger than 512MB. Please ensure the files do not contain sensitive information."
+    "gpt4UploadingRequirements": "No more than 10 files or images, each file no larger than 512MB. Please ensure the files do not contain sensitive information.",
+    "check_chatgpt_accounts": "Please use this feature after saving the configuration and updating to the latest access token. If you have a Team subscription, the Team Account ID will be filled in automatically.",
+    "test_arkose": "Please refer to the documentation to set arkose_endpoint_base in config and save it before using."
   },
   "labels": {
     "nickname": "Nickname",
@@ -311,6 +326,7 @@
     "available_ask_count": "Available ask count",
     "available_gpt4_ask_count": "Available GPT-4 ask count",
     "is_plus_account": "is_plus_account",
+    "team_account_id": "team_account_id",
     "ask_timeout": "ask_timeout",
     "remark": "remark",
     "allow_chat_type": "with permission",
@@ -341,12 +357,14 @@
       "enabled_models": "Enabled Models",
       "model_code_mapping": "Model Code Mapping",
       "file_upload_strategy": "File Upload Strategy"
-    }
+    },
+    "conversation_id": "Conversatin ID"
   },
   "models": {
     "gpt_3_5": "GPT-3.5",
     "gpt_3_5_mobile": "GPT-3.5 Mobile",
     "gpt_4": "GPT-4 All Tools",
+    "gpt_4o": "GPT-4 Omni",
     "gpt_4_mobile": "GPT-4 Mobile",
     "gpt_4_browsing": "GPT-4 Web Browsing",
     "gpt_4_plugins": "GPT-4 Plugins",
@@ -362,6 +380,7 @@
       "gpt_3_5": "The fastest model, great for most everyday tasks.",
       "gpt_3_5_mobile": "Mobile version of GPT-3.5. Not recommend to use.",
       "gpt_4": "Browsing, Advanced Data Analysis, and DALL-E are now built into GPT-4.",
+      "gpt_4o": "Newest and most advanced model",
       "gpt_4_browsing": "An experimental model that knows when and how to browse the internet.",
       "gpt_4_plugins": "An experimental model that knows when and how to use plugins.",
       "gpt_4_mobile": "Mobile version of GPT-4. Not recommend to use.",
@@ -383,7 +402,8 @@
     "openai_web_installed_plugins": "Note: Only the plugins enabled here can be selected when using GPT-4 Plugin!",
     "config": {
       "enabled_models": "Set which models are enabled globally. Models that are not enabled here will not be available for all accounts.",
-      "file_upload_strategy": "Determined how to upload files when using the code interpreter model. See the documentation for details"
+      "file_upload_strategy": "Determined how to upload files when using the code interpreter model. See the documentation for details",
+      "max_completion_concurrency": "Decide the concurrency of conversation. \nIf set to a large value, it is equivalent to disabling the queued conversation feature."
     }
   },
   "dialog": {

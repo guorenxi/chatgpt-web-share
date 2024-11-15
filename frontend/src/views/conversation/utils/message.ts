@@ -123,17 +123,22 @@ export function buildTemporaryMessage(
   openaiWebMultimodalImageParts: OpenaiWebChatMessageMultimodalTextContentImagePart[] | null = null
 ) {
   const random_strid = Math.random().toString(36).substring(2, 16);
+  const content = source === 'openai_api' ? {
+    content_type: 'text',
+    text: textContent,
+  } : {
+    content_type: 'text',
+    parts: [textContent],
+  };
   const result = {
     id: `temp_${random_strid}`,
     source,
-    content: {
-      content_type: 'text',
-      parts: [textContent],
-    },
+    content,
     role: role,
     parent, // 其实没有用到parent
     children: [],
     model,
+    create_time: new Date().toISOString(),
   } as BaseChatMessage;
   if (openaiWebAttachments) {
     const metadata = {
@@ -199,7 +204,7 @@ function findMessageIdOfSandboxFile(sandboxPath: string, messages: BaseChatMessa
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i];
     const content = getTextMessageContent([message]);
-    console.log(`search ${sandboxPath} in ${content}`);
+    // console.log(`search ${sandboxPath} in ${content}`);
     if (content.includes(sandboxPath)) {
       return message.id;
     }
@@ -260,7 +265,7 @@ export function processSandboxLinks(contentDiv: HTMLDivElement, conversationId: 
   });
 }
 
-export async function getImageDownloadUrlFromFileServiceSchemaUrl(url: string | undefined) {
+export async function getImageDownloadUrlFromFileServiceSchemaUrl(url: string | undefined | null) {
   if (!url || !url.startsWith('file-service://')) return null;
   try {
     const response = await getFileDownloadUrlApi(url.split('file-service://')[1]);

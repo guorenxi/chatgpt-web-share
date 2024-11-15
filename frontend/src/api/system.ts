@@ -5,6 +5,7 @@ import {
   ConfigModel,
   CredentialsModel,
   LogFilterOptions,
+  OpenaiWebAccountsCheckResponse,
   RequestLogAggregation,
   SystemInfo,
 } from '@/types/schema';
@@ -27,10 +28,6 @@ export function getAskStatisticsApi(granularity: number) {
   });
 }
 
-export function getServerLogsApi(options: LogFilterOptions | null) {
-  return axios.post(ApiUrl.ServerLogs, options);
-}
-
 export function getSystemConfig() {
   return axios.get<ConfigModel>(ApiUrl.SystemConfig);
 }
@@ -49,4 +46,8 @@ export function updateSystemCredentials(credentials: CredentialsModel) {
 
 export function runActionSyncOpenaiWebConversations() {
   return axios.post(ApiUrl.SystemActionSyncOpenaiWebConversations);
+}
+
+export function SystemCheckOpenaiWebAccount() {
+  return axios.get<OpenaiWebAccountsCheckResponse>(ApiUrl.SystemCheckOpenaiWebAccount);
 }
